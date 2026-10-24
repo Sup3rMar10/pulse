@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; form-action 'self'">
+<title>Pulse</title>
+<style>
+:root{--bg:#0f1115;--panel:#181b22;--line:#262a33;--fg:#e6e8ee;--mut:#8b93a3;--ok:#3ecf8e;--bad:#ff5d6c;--warn:#f5b84b;--acc:#7c9cff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif}
+header{display:flex;justify-content:space-between;align-items:center;padding:14px 20px;border-bottom:1px solid var(--line)}
+header h1{margin:0;font-size:20px}
+nav{display:flex;gap:14px;align-items:center}
+main{max-width:1000px;margin:0 auto;padding:20px}
+h2{font-size:17px;margin:28px 0 10px}
+a{color:var(--acc)}
+.muted,small{color:var(--mut)}
+.panel,.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+.narrow{max-width:360px;margin:40px auto;display:flex;flex-direction:column;gap:10px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.wrap{flex-wrap:wrap;justify-content:flex-start}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;margin-top:14px}
+.card h3{margin:0;font-size:16px}
+.card .url{margin:2px 0 10px;font-size:13px;word-break:break-all}
+input,button{font:inherit;color:var(--fg);background:#0f1218;border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+input{flex:1;min-width:120px}
+input[type=number]{flex:0 0 90px;min-width:0}
+button{cursor:pointer;background:var(--acc);color:#0b0d12;border:0;font-weight:600}
+button.ghost{background:transparent;color:var(--fg);border:1px solid var(--line)}
+button.link{background:none;color:var(--mut);padding:0;font-weight:400;text-decoration:underline}
+.pill{font-size:12px;padding:1px 8px;border-radius:99px;background:var(--line);color:var(--mut)}
+.pill.up{background:#12301f;color:var(--ok)}
+.pill.down{background:#3a1820;color:var(--bad)}
+.spark{width:100%;height:36px;margin:8px 0;display:block}
+.spark path{fill:none;stroke:var(--acc);stroke-width:1.5}
+.spark circle{fill:var(--bad)}
+.inc{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.inc li{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+.banner{padding:16px;border-radius:10px;font-weight:600;font-size:18px}
+.banner.up{background:#12301f;color:var(--ok)}
+.banner.warn{background:#3a2e12;color:var(--warn)}
+.banner.down{background:#3a1820;color:var(--bad)}
+.err{color:var(--bad);margin:0;min-height:1em;flex-basis:100%}
+@media(max-width:520px){header{padding:12px}main{padding:12px}}
+</style>
+</head>
+<body>
+<header><h1>💓 Pulse</h1><nav id="nav"></nav></header>
+<main id="app"></main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const app = $("#app"), nav = $("#nav");
+let timer = null, es = null;
+
+async function api(path, method = "GET", body) {
+  const r = await fetch(path, {
+    method, credentials: "same-origin",
+    headers: body ? {"Content-Type": "application/json"} : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const e = new Error(typeof data.detail === "string" ? data.detail : (data.detail?.[0]?.msg || "request failed"));
+    e.status = r.status;
+    throw e;
+  }
+  return data;
+}
+
+function stop() {
+  clearInterval(timer); timer = null;
+  if (es) { es.close(); es = null; }
+}
+
+const ago = ts => {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+  return s < 60 ? s + "s ago" : s < 3600 ? Math.floor(s / 60) + "m ago" : s < 86400 ? Math.floor(s / 3600) + "h ago" : Math.floor(s / 86400) + "d ago";
+};
+const when = ts => new Date(ts * 1000).toLocaleString();
+const dur = (a, b) => {
+  const s = (b ?? Math.floor(Date.now() / 1000)) - a;
+  return s < 60 ? s + "s" : s < 3600 ? Math.floor(s / 60) + "m" : (s / 3600).toFixed(1) + "h";
+};
+const pill = ok => ok === null ? '<span class="pill">pending</span>' : ok ? '<span class="pill up">up</span>' : '<span class="pill down">down</span>';
+
+function spark(a) {
+  const W = 240, H = 36, n = a.length;
+  if (!n) return '<div class="spark"></div>';
+  const max = Math.max(1, ...a.filter(v => v != null));
+  const x = i => n > 1 ? 2 + i * (W - 4) / (n - 1) : W / 2;
+  const y = v => H - 3 - (v / max) * (H - 8);
+  let d = "", gap = true, dots = "";
+  a.forEach((v, i) => {
+    if (v == null) { gap = true; dots += `<circle cx="${x(i).toFixed(1)}" cy="${H - 3}" r="2.2"/>`; }
+    else { d += `${gap ? "M" : "L"}${x(i).toFixed(1)} ${y(v).toFixed(1)}`; gap = false; }
+  });
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" role="img" aria-label="latency, last ${n} checks"><path d="${d}"/>${dots}</svg>`;
+}
+
+function card(m, owner) {
+  return `<article class="card">
+    <div class="row"><h3>${esc(m.name)}</h3>${pill(m.ok)}</div>
+    ${owner ? `<p class="muted url">${esc(m.url)} · every ${m.interval_s}s</p>` : ""}
+    <div class="row"><span><b>${m.uptime_24h == null ? "–" : m.uptime_24h + "%"}</b> <small>24h uptime</small></span><span><b>${m.latency_ms == null ? "–" : m.latency_ms + " ms"}</b></span></div>
+    ${spark(m.spark)}
+    <div class="row"><small>${m.ts ? "checked " + ago(m.ts) : "waiting for first check"}</small>${owner ? `<button class="link" data-del="${m.id}">remove</button>` : ""}</div>
+  </article>`;
+}
+
+const incList = list => list.length
+  ? `<ul class="inc">${list.map(i => `<li><span class="pill ${i.ended_at ? "up" : "down"}">${i.ended_at ? "resolved" : "open"}</span> <b>${esc(i.name)}</b> <small>${when(i.started_at)} · ${dur(i.started_at, i.ended_at)}${i.reason ? " · " + esc(i.reason) : ""}</small></li>`).join("")}</ul>`
+  : '<p class="muted">No incidents. Suspiciously quiet.</p>';
+
+function authView() {
+  stop(); nav.innerHTML = "";
+  app.innerHTML = `<form id="auth" class="panel narrow"><h2 style="margin:0">Sign in</h2>
+    <input name="email" type="email" placeholder="email" required maxlength="254" autocomplete="username">
+    <input name="password" type="password" placeholder="password (8+ chars)" required minlength="8" maxlength="128" autocomplete="current-password">
+    <div class="row"><button data-mode="login">Log in</button><button data-mode="register" class="ghost">Register</button></div>
+    <p id="err" class="err"></p></form>`;
+  $("#auth").onsubmit = async e => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    try {
+      await api("/api/" + (e.submitter?.dataset.mode || "login"), "POST", {email: f.get("email"), password: f.get("password")});
+      boot();
+    } catch (x) { $("#err").textContent = x.message; }
+  };
+}
+
+async function dashView(me) {
+  stop();
+  nav.innerHTML = `<a href="/status/${esc(me.slug)}" target="_blank" rel="noopener">public page</a><button class="link" id="out">log out</button>`;
+  app.innerHTML = `<form id="add" class="panel row wrap">
+    <input name="name" placeholder="name" required maxlength="60">
+    <input name="url" type="url" placeholder="https://example.com" required maxlength="2048">
+    <input name="interval_s" type="number" min="10" max="3600" value="30" title="seconds between checks">
+    <button>Add monitor</button><p id="err" class="err"></p></form>
+    <section id="cards" class="grid"></section>
+    <h2>Incidents</h2><section id="incidents"></section>`;
+  const refresh = async () => {
+    try {
+      const [ms, inc] = await Promise.all([api("/api/monitors"), api("/api/incidents")]);
+      $("#cards").innerHTML = ms.length ? ms.map(m => card(m, true)).join("") : '<p class="muted">Nothing monitored yet. Add a URL above.</p>';
+      $("#incidents").innerHTML = incList(inc);
+    } catch (x) { if (x.status === 401) boot(); }
+  };
+  $("#add").onsubmit = async e => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    try {
+      await api("/api/monitors", "POST", {name: f.get("name"), url: f.get("url"), interval_s: Number(f.get("interval_s"))});
+      e.target.reset(); $("#err").textContent = "";
+      refresh();
+    } catch (x) { $("#err").textContent = x.message; }
+  };
+  $("#cards").onclick = async e => {
+    const id = e.target.dataset.del;
+    if (id) { await api("/api/monitors/" + id, "DELETE").catch(() => {}); refresh(); }
+  };
+  $("#out").onclick = async () => { await api("/api/logout", "POST").catch(() => {}); boot(); };
+  await refresh();
+  timer = setInterval(refresh, 10000);
+}
+
+async function publicView(slug) {
+  stop();
+  nav.innerHTML = '<a href="/">dashboard</a>';
+  app.innerHTML = '<div id="banner" class="banner"></div><p class="muted" id="live"></p><section id="cards" class="grid"></section><h2>Recent incidents</h2><section id="incidents"></section>';
+  const base = "/api/status/" + encodeURIComponent(slug);
+  let snap;
+  const live = on => { $("#live").textContent = on ? "● live" : "○ reconnecting…"; };
+  const draw = () => {
+    const ms = snap.monitors, down = ms.filter(m => m.ok === false);
+    const [cls, msg] = !ms.length ? ["warn", "No monitors yet"]
+      : !down.length ? ["up", "All systems operational"]
+      : down.length === ms.length ? ["down", "Major outage"] : ["warn", "Partial outage"];
+    $("#banner").className = "banner " + cls;
+    $("#banner").textContent = msg;
+    $("#cards").innerHTML = ms.map(m => card(m, false)).join("");
+    $("#incidents").innerHTML = incList(snap.incidents);
+  };
+  const load = async () => { snap = await api(base); draw(); };
+  try { await load(); } catch { app.innerHTML = '<p class="panel">No status page here.</p>'; return; }
+  timer = setInterval(draw, 15000); // keeps "checked 12s ago" honest
+  let wasDown = false;
+  es = new EventSource(base + "/stream");
+  es.onopen = () => { live(true); if (wasDown) { wasDown = false; load(); } };
+  es.onerror = () => { wasDown = true; live(false); };
+  es.addEventListener("check", e => {
+    const ev = JSON.parse(e.data);
+    const m = snap.monitors.find(x => x.id === ev.id);
+    if (!m) return load();
+    const flipped = m.incident_open !== ev.incident_open;
+    Object.assign(m, {ok: ev.ok, status_code: ev.status_code, latency_ms: ev.latency_ms, ts: ev.ts, uptime_24h: ev.uptime_24h, incident_open: ev.incident_open});
+    m.spark = [...m.spark, ev.ok ? ev.latency_ms : null].slice(-40);
+    flipped ? load() : draw();
+  });
+}
+
+async function boot() {
+  const m = location.pathname.match(/^\/status\/([a-z0-9-]+)\/?$/);
+  if (m) return publicView(m[1]);
+  let me;
+  try { me = await api("/api/me"); } catch { return authView(); }
+  dashView(me);
+}
+boot();
+</script>
+</body>
+</html>
